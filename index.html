@@ -791,6 +791,7 @@
         <button id="loadBtn" class="btn btn-primary">Load live inventory</button>
         <button id="refreshBtn" class="btn btn-secondary">Refresh data</button>
         <button id="demoBtn" class="btn btn-secondary">Load demo</button>
+        <a href="dashboard.html" class="btn btn-secondary inline-flex items-center justify-center">Open dashboard</a>
       </div>
 
       <div class="mt-4 flex flex-col lg:flex-row lg:items-center gap-3 justify-between text-xs text-white/60 leading-6">
@@ -858,7 +859,8 @@
 
     const STORAGE = {
       url: 'thriftdex-elite-sheet-url',
-      autoRefresh: 'thriftdex-elite-auto-refresh'
+      autoRefresh: 'thriftdex-elite-auto-refresh',
+      inventoryCache: 'thriftdex-elite-inventory-cache'
     };
 
     const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=1200&q=80';
@@ -984,6 +986,18 @@
     }
     function safeLocalGet(key) {
       try { return localStorage.getItem(key) || ''; } catch (_) { return ''; }
+    }
+
+
+    function persistInventory(rows) {
+      try {
+        const payload = {
+          updatedAt: new Date().toISOString(),
+          sourceUrl: normalizedSourceUrl || '',
+          rows
+        };
+        safeLocalSet(STORAGE.inventoryCache, JSON.stringify(payload));
+      } catch (_) {}
     }
 
     function escapeHtml(str) {
@@ -1432,6 +1446,7 @@
         const rows = await fetchCsvRows(normalizedSourceUrl);
         inventory = rows;
         renderCards(inventory);
+        persistInventory(inventory);
         setSyncMeta('Google Sheet');
         safeLocalSet(STORAGE.url, normalizedSourceUrl);
         els.url.value = normalizedSourceUrl;
@@ -1451,6 +1466,7 @@
       normalizedSourceUrl = '';
       sheetOpenUrl = '#';
       renderCards(inventory);
+      persistInventory(inventory);
       setSyncMeta('Demo data');
       showToast('Demo data loaded.', 'success');
     }
