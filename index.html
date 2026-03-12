@@ -863,6 +863,8 @@
       inventoryCache: 'thriftdex-elite-inventory-cache'
     };
 
+    const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSZQbxfMT_V4_wHyjn4yOtGPxd4I392sODXGX3KQZFJ2ndSheNkFBrdm6wRdNqWAkYPGtSHMS0Lhp3U/pub?gid=0&single=true&output=csv';
+
     const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=1200&q=80';
 
     const els = {
@@ -1484,7 +1486,7 @@
     function hydrateControls() {
       const savedUrl = safeLocalGet(STORAGE.url);
       const savedRefresh = safeLocalGet(STORAGE.autoRefresh);
-      if (savedUrl) els.url.value = savedUrl;
+      els.url.value = savedUrl || DEFAULT_SHEET_URL;
       if (savedRefresh) els.autoRefresh.value = savedRefresh;
     }
 
