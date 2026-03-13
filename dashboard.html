@@ -57,16 +57,20 @@
         <div class="glass rounded-2xl p-4"><p class="text-xs text-white/60 uppercase tracking-[.18em]">Sold</p><p id="soldItems" class="text-3xl font-black mt-2">0</p></div>
         <div class="glass rounded-2xl p-4"><p class="text-xs text-white/60 uppercase tracking-[.18em]">Pending</p><p id="pendingItems" class="text-3xl font-black mt-2">0</p></div>
         <div class="glass rounded-2xl p-4"><p class="text-xs text-white/60 uppercase tracking-[.18em]">Unsold</p><p id="unsoldItems" class="text-3xl font-black mt-2">0</p></div>
-        <div class="glass rounded-2xl p-4"><p class="text-xs text-white/60 uppercase tracking-[.18em]">Total profit</p><p id="totalProfit" class="text-2xl font-black mt-2">PKR 0</p></div>
-        <div class="glass rounded-2xl p-4"><p class="text-xs text-white/60 uppercase tracking-[.18em]">Inventory value</p><p id="inventoryValue" class="text-2xl font-black mt-2">PKR 0</p></div>
+        <div class="glass rounded-2xl p-4"><p class="text-xs text-white/60 uppercase tracking-[.18em]">Realized profit (sold)</p><p id="totalProfit" class="text-2xl font-black mt-2">PKR 0</p></div>
+        <div class="glass rounded-2xl p-4"><p class="text-xs text-white/60 uppercase tracking-[.18em]">Inventory value (cost)</p><p id="inventoryValue" class="text-2xl font-black mt-2">PKR 0</p></div>
       </div>
 
-      <div class="grid sm:grid-cols-2 xl:grid-cols-4 gap-3 mt-4 text-sm">
+      <div class="grid sm:grid-cols-2 xl:grid-cols-6 gap-3 mt-4 text-sm">
         <div class="insight-chip"><p class="text-white/60">Sell-through</p><p id="sellThrough" class="text-xl font-bold mt-1">0%</p></div>
         <div class="insight-chip"><p class="text-white/60">Avg. ticket</p><p id="avgTicket" class="text-xl font-bold mt-1">PKR 0</p></div>
         <div class="insight-chip"><p class="text-white/60">Avg. profit / sold item</p><p id="avgProfitPerSold" class="text-xl font-bold mt-1">PKR 0</p></div>
         <div class="insight-chip"><p class="text-white/60">Profit margin</p><p id="profitMargin" class="text-xl font-bold mt-1">0%</p></div>
+        <div class="insight-chip"><p class="text-white/60">Projected profit (all)</p><p id="projectedProfit" class="text-xl font-bold mt-1">PKR 0</p></div>
+        <div class="insight-chip"><p class="text-white/60">Data quality alerts</p><p id="dataAlerts" class="text-xl font-bold mt-1">0</p></div>
       </div>
+
+      <div id="errorBanner" class="hidden mt-4 rounded-2xl border border-red-200/30 bg-red-500/10 px-4 py-3 text-sm text-red-100"></div>
     </header>
 
     <section class="mt-6 grid lg:grid-cols-3 gap-4">
@@ -123,6 +127,9 @@
       avgTicket: document.getElementById('avgTicket'),
       avgProfitPerSold: document.getElementById('avgProfitPerSold'),
       profitMargin: document.getElementById('profitMargin'),
+      projectedProfit: document.getElementById('projectedProfit'),
+      dataAlerts: document.getElementById('dataAlerts'),
+      errorBanner: document.getElementById('errorBanner'),
       rowsBody: document.getElementById('rowsBody'),
       statusBars: document.getElementById('statusBars'),
       topProfitItems: document.getElementById('topProfitItems'),
@@ -131,7 +138,11 @@
     };
 
     function parseNum(value) {
-      const cleaned = String(value ?? '').replace(/pkr|rs\.?|,/ig, '').replace(/[^\d.-]/g, '');
+      const cleaned = String(value ?? '')
+        .replace(/\u00A0/g, ' ')
+        .replace(/pkr|rs\.?/ig, '')
+        .replace(/,/g, '')
+        .replace(/[^\d.-]/g, '');
       const n = Number(cleaned);
       return Number.isFinite(n) ? n : 0;
     }
@@ -144,9 +155,10 @@
       const status = String(row['Payment Status'] || '').toLowerCase();
       const soldDate = String(row['Date of Sale'] || '').trim();
       if (status.includes('sold') || status.includes('complete') || status.includes('paid')) return 'sold';
-      if (status.includes('pending')) return 'pending';
-      if (status.includes('unsold') || status.includes('stock')) return 'unsold';
-      return soldDate ? 'sold' : 'unsold';
+      if (status.includes('pending') || status.includes('advance') || status.includes('hold')) return 'pending';
+      if (status.includes('unsold') || status.includes('stock') || status.includes('available')) return 'unsold';
+      if (soldDate && !status) return 'sold';
+      return soldDate ? 'pending' : 'unsold';
     }
 
     function deriveNetSales(row) {
@@ -159,6 +171,69 @@
       const explicit = parseNum(row['Profit']);
       if (explicit) return explicit;
       return deriveNetSales(row) - parseNum(row['Cost Price']);
+    }
+
+    function parseDate(row) {
+      const rawDate = String(row['Date of Sale'] || '').trim() || String(row['Date of purchase'] || '').trim();
+      if (!rawDate) return null;
+      const date = new Date(rawDate);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    function summarizeRows(rows) {
+      const summary = {
+        sold: 0,
+        pending: 0,
+        unsold: 0,
+        soldRows: [],
+        pendingRows: [],
+        statusBuckets: { sold: [], pending: [], unsold: [] },
+        realizedProfit: 0,
+        projectedProfit: 0,
+        inventoryValue: 0,
+        totalSales: 0,
+        totalNetSales: 0,
+        alerts: []
+      };
+
+      rows.forEach((row, index) => {
+        const status = normalizeStatus(row);
+        const cost = parseNum(row['Cost Price']);
+        const sale = parseNum(row['Sales Price']);
+        const netSales = deriveNetSales(row);
+        const profit = derivedProfit(row);
+        const hasBadNumbers = (sale < 0 || cost < 0 || netSales < 0);
+
+        summary.projectedProfit += profit;
+        summary.inventoryValue += cost;
+
+        if (status === 'sold') {
+          summary.sold += 1;
+          summary.soldRows.push(row);
+          summary.totalSales += sale;
+          summary.totalNetSales += netSales;
+          summary.realizedProfit += profit;
+        } else if (status === 'pending') {
+          summary.pending += 1;
+          summary.pendingRows.push(row);
+        } else {
+          summary.unsold += 1;
+        }
+
+        summary.statusBuckets[status].push(row);
+
+        if (!row['Product Name']) {
+          summary.alerts.push(`Row ${index + 1}: Missing product name.`);
+        }
+        if (status === 'sold' && !String(row['Date of Sale'] || '').trim()) {
+          summary.alerts.push(`Row ${index + 1}: Marked sold but Date of Sale is empty.`);
+        }
+        if (hasBadNumbers) {
+          summary.alerts.push(`Row ${index + 1}: Negative monetary value detected.`);
+        }
+      });
+
+      return summary;
     }
 
     function readCache() {
@@ -217,9 +292,8 @@
       const soldRows = rows.filter(row => normalizeStatus(row) === 'sold');
       const monthMap = new Map();
       soldRows.forEach(row => {
-        const rawDate = String(row['Date of Sale'] || '').trim() || String(row['Date of purchase'] || '').trim();
-        const date = new Date(rawDate);
-        if (Number.isNaN(date.getTime())) return;
+        const date = parseDate(row);
+        if (!date) return;
         const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
         const monthLabel = date.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
         if (!monthMap.has(monthKey)) monthMap.set(monthKey, { label: monthLabel, sales: 0, profit: 0 });
@@ -246,48 +320,67 @@
       }).join('');
     }
 
+    function clearError() {
+      els.errorBanner.textContent = '';
+      els.errorBanner.classList.add('hidden');
+    }
+
+    function showError(message) {
+      els.errorBanner.textContent = message;
+      els.errorBanner.classList.remove('hidden');
+    }
+
     function render() {
-      const cache = readCache();
-      const rows = Array.isArray(cache?.rows) ? cache.rows : [];
+      try {
+        clearError();
+        const cache = readCache();
+        const rows = Array.isArray(cache?.rows) ? cache.rows : [];
+        const summary = summarizeRows(rows);
 
-      const soldRows = rows.filter(r => normalizeStatus(r) === 'sold');
-      const pendingRows = rows.filter(r => normalizeStatus(r) === 'pending');
-      const sold = soldRows.length;
-      const pending = pendingRows.length;
-      const unsold = rows.length - sold - pending;
+        const sellThrough = rows.length ? (summary.sold / rows.length) * 100 : 0;
+        const avgTicket = summary.sold ? summary.totalSales / summary.sold : 0;
+        const avgProfitPerSold = summary.sold ? summary.realizedProfit / summary.sold : 0;
+        const profitMargin = summary.totalNetSales ? (summary.realizedProfit / summary.totalNetSales) * 100 : 0;
 
-      const totalProfit = rows.reduce((sum, row) => sum + derivedProfit(row), 0);
-      const inventoryValue = rows.reduce((sum, row) => sum + parseNum(row['Cost Price']), 0);
-      const totalSales = soldRows.reduce((sum, row) => sum + parseNum(row['Sales Price']), 0);
-      const totalNetSales = soldRows.reduce((sum, row) => sum + deriveNetSales(row), 0);
+        els.totalItems.textContent = rows.length;
+        els.soldItems.textContent = summary.sold;
+        els.pendingItems.textContent = summary.pending;
+        els.unsoldItems.textContent = summary.unsold;
+        els.totalProfit.textContent = `PKR ${money(summary.realizedProfit)}`;
+        els.inventoryValue.textContent = `PKR ${money(summary.inventoryValue)}`;
+        els.sellThrough.textContent = `${sellThrough.toFixed(1)}%`;
+        els.avgTicket.textContent = `PKR ${money(avgTicket)}`;
+        els.avgProfitPerSold.textContent = `PKR ${money(avgProfitPerSold)}`;
+        els.profitMargin.textContent = `${profitMargin.toFixed(1)}%`;
+        els.projectedProfit.textContent = `PKR ${money(summary.projectedProfit)}`;
+        els.dataAlerts.textContent = summary.alerts.length;
 
-      const sellThrough = rows.length ? (sold / rows.length) * 100 : 0;
-      const avgTicket = sold ? totalSales / sold : 0;
-      const avgProfitPerSold = sold ? soldRows.reduce((sum, row) => sum + derivedProfit(row), 0) / sold : 0;
-      const profitMargin = totalNetSales ? (totalProfit / totalNetSales) * 100 : 0;
+        const recentRows = [...rows].sort((a, b) => {
+          const left = parseDate(a)?.getTime() || 0;
+          const right = parseDate(b)?.getTime() || 0;
+          return right - left;
+        });
 
-      els.totalItems.textContent = rows.length;
-      els.soldItems.textContent = sold;
-      els.pendingItems.textContent = pending;
-      els.unsoldItems.textContent = unsold;
-      els.totalProfit.textContent = `PKR ${money(totalProfit)}`;
-      els.inventoryValue.textContent = `PKR ${money(inventoryValue)}`;
-      els.sellThrough.textContent = `${sellThrough.toFixed(1)}%`;
-      els.avgTicket.textContent = `PKR ${money(avgTicket)}`;
-      els.avgProfitPerSold.textContent = `PKR ${money(avgProfitPerSold)}`;
-      els.profitMargin.textContent = `${profitMargin.toFixed(1)}%`;
+        els.rowsBody.innerHTML = recentRows.slice(0, 12).map(rowHtml).join('') || '<tr><td colspan="6" class="py-6 text-center text-white/60">No cached inventory found. Load data in Inventory page first.</td></tr>';
+        els.statusBars.innerHTML = [
+          bar('Sold', summary.sold, rows.length, 'linear-gradient(90deg,#4af7b0,#008f60)'),
+          bar('Pending', summary.pending, rows.length, 'linear-gradient(90deg,#ffd86b,#d18209)'),
+          bar('Unsold', summary.unsold, rows.length, 'linear-gradient(90deg,#8fb5ff,#455bff)')
+        ].join('');
+        els.topProfitItems.innerHTML = topProfitHtml(rows);
+        els.monthlyTrend.innerHTML = trendHtml(rows);
 
-      els.rowsBody.innerHTML = rows.slice(0, 12).map(rowHtml).join('') || '<tr><td colspan="6" class="py-6 text-center text-white/60">No cached inventory found. Load data in Inventory page first.</td></tr>';
-      els.statusBars.innerHTML = [
-        bar('Sold', sold, rows.length, 'linear-gradient(90deg,#4af7b0,#008f60)'),
-        bar('Pending', pending, rows.length, 'linear-gradient(90deg,#ffd86b,#d18209)'),
-        bar('Unsold', unsold, rows.length, 'linear-gradient(90deg,#8fb5ff,#455bff)')
-      ].join('');
-      els.topProfitItems.innerHTML = topProfitHtml(rows);
-      els.monthlyTrend.innerHTML = trendHtml(rows);
-
-      const stamp = cache?.updatedAt ? new Date(cache.updatedAt).toLocaleString('en-GB') : null;
-      els.syncInfo.textContent = stamp ? `Synced from inventory cache: ${stamp}` : 'No cache found yet. Open inventory page and load live/demo data.';
+        const stamp = cache?.updatedAt ? new Date(cache.updatedAt).toLocaleString('en-GB') : null;
+        const sourceMessage = cache?.sourceUrl ? ` · Source: ${cache.sourceUrl}` : '';
+        const alertMessage = summary.alerts.length ? ` · ${summary.alerts.length} data alert(s)` : '';
+        els.syncInfo.textContent = stamp
+          ? `Synced from inventory cache: ${stamp}${sourceMessage}${alertMessage}`
+          : 'No cache found yet. Open inventory page and load live/demo data.';
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown dashboard error.';
+        showError(`Dashboard rendering failed: ${message}`);
+        els.syncInfo.textContent = 'Dashboard failed to render. Please refresh after loading inventory again.';
+      }
     }
 
     els.refreshBtn.addEventListener('click', render);
